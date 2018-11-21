@@ -62,11 +62,10 @@ const config = require('./config');
 config.setup();
 
 const plugins = require('./plugins');
-const {addSymlink, addBinToUserPath} = require('./utils/cli-install');
-
+const {installCLI} = require('./utils/cli-install');
 const AppMenu = require('./menus/menu');
-
 const Window = require('./ui/window');
+const windowUtils = require('./utils/window-utils');
 
 const windowSet = new Set([]);
 
@@ -86,11 +85,15 @@ app.getLastFocusedWindow = () => {
   });
 };
 
+//eslint-disable-next-line no-console
+console.log('Disabling Chromium GPU blacklist');
+app.commandLine.appendSwitch('ignore-gpu-blacklist');
+
 if (isDev) {
   //eslint-disable-next-line no-console
   console.log('running in dev mode');
 
-  // Overide default appVersion which is set from package.json
+  // Override default appVersion which is set from package.json
   gitDescribe({customArguments: ['--tags']}, (error, gitInfo) => {
     if (!error) {
       app.setVersion(gitInfo.raw);
@@ -99,13 +102,6 @@ if (isDev) {
 } else {
   //eslint-disable-next-line no-console
   console.log('running in prod mode');
-  if (process.platform === 'win32') {
-    //eslint-disable-next-line no-console
-    addBinToUserPath().catch(err => console.error('Failed to add Hyper CLI path to user PATH', err));
-  } else {
-    //eslint-disable-next-line no-console
-    addSymlink().catch(err => console.error('Failed to symlink Hyper CLI', err));
-  }
 }
 
 const url = 'file://' + resolve(isDev ? __dirname : app.getAppPath(), 'index.html');
@@ -153,6 +149,10 @@ app.on('ready', () =>
           } else {
             startY = points[1] + 34;
           }
+        }
+
+        if (!windowUtils.positionIsValid([startX, startY])) {
+          [startX, startY] = config.windowDefaults.windowPosition;
         }
 
         const hwin = new Window({width, height, x: startX, y: startY}, cfg, fn);
@@ -212,6 +212,19 @@ app.on('ready', () =>
       makeMenu();
       plugins.subscribe(plugins.onApp.bind(undefined, app));
       config.subscribe(makeMenu);
+      if (!isDev) {
+        // check if should be set/removed as default ssh protocol client
+        if (config.getConfig().defaultSSHApp && !app.isDefaultProtocolClient('ssh')) {
+          //eslint-disable-next-line no-console
+          console.log('Setting Hyper as default client for ssh:// protocol');
+          app.setAsDefaultProtocolClient('ssh');
+        } else if (!config.getConfig().defaultSSHApp && app.isDefaultProtocolClient('ssh')) {
+          //eslint-disable-next-line no-console
+          console.log('Removing Hyper from default client for ssh:// protocol');
+          app.removeAsDefaultProtocolClient('ssh');
+        }
+        installCLI(false);
+      }
     })
     .catch(err => {
       //eslint-disable-next-line no-console
@@ -222,6 +235,20 @@ app.on('ready', () =>
 app.on('open-file', (event, path) => {
   const lastWindow = app.getLastFocusedWindow();
   const callback = win => win.rpc.emit('open file', {path});
+  if (lastWindow) {
+    callback(lastWindow);
+  } else if (!lastWindow && {}.hasOwnProperty.call(app, 'createWindow')) {
+    app.createWindow(callback);
+  } else {
+    // If createWindow doesn't exist yet ('ready' event was not fired),
+    // sets his callback to an app.windowCallback property.
+    app.windowCallback = callback;
+  }
+});
+
+app.on('open-url', (event, sshUrl) => {
+  const lastWindow = app.getLastFocusedWindow();
+  const callback = win => win.rpc.emit('open ssh', sshUrl);
   if (lastWindow) {
     callback(lastWindow);
   } else if (!lastWindow && {}.hasOwnProperty.call(app, 'createWindow')) {
